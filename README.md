@@ -32,7 +32,7 @@ P5 BUILD              → prp-core:prp-ralph    →  code + tests/e2e/<slug>.spe
 P6 DELIVER            → Telos (no delegate)   →  .claude/PRPs/reports/<slug>-final.md
 ```
 
-Human gates: P1.0 (soft, cheap exit), P1, P2, P3, P4. P5/P6 are autonomous. P4's E2E design doc is frozen at GATE 4 — P5 must satisfy it, not edit it. Before P5 begins, Telos prompts the user to set a `/goal` Stop hook so Claude Code keeps running until the E2E suite passes.
+Human gates: P1.0 (soft, cheap exit), P1, P2, P3, P4. P5/P6 are autonomous. P4's E2E design doc is frozen at GATE 4 — P5 must satisfy it, not edit it. Before P5 begins, Telos asks the user to opt into an autonomy mechanism so the build loop runs until the E2E suite passes: a [**Claude Code Dynamic Workflow**](https://code.claude.com/docs/en/workflows) (preferred — the runtime forbids mid-run user input and fans out parallel sub-agents that loop until every acceptance checklist item maps to a passing assertion) or a `/goal` Stop hook (fallback).
 
 See [`SKILL.md`](./SKILL.md) for the full spec, phase-by-phase.
 
@@ -106,6 +106,7 @@ Install location (default): `~/.claude/skills/grill-with-docs/`
 ### Optional
 
 - `everything-claude-code:e2e` / `everything-claude-code:e2e-runner` — invoked by `prp-ralph` during P5 for E2E scaffolding and flake handling. If unavailable, ralph falls back to writing tests directly per the P4 design doc.
+- **[Claude Code Dynamic Workflows](https://code.claude.com/docs/en/workflows)** (Claude Code v2.1.154+, all paid plans; Pro requires `/config` toggle) — when available, Telos offers P5 a stronger autonomy mechanism than `/goal`: the ralph loop runs as a JavaScript script inside the workflow runtime, with no mid-run user input, up to 16 concurrent sub-agents, and a terminal verification phase that confirms every acceptance checklist item in `<slug>-e2e.md` maps to a passing assertion before returning success. Activation is user-typed (`/effort ultracode` session-wide, or the `ultracode` keyword in a single prompt). After a successful run, Telos suggests saving the script to `.claude/workflows/telos-build` (project-shared) so subsequent tasks can invoke `/telos-build <slug>` directly. Falls back to `/goal` Stop hook when unavailable.
 
 ## Tracking & visibility
 

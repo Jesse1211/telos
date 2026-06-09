@@ -704,9 +704,45 @@ State:
 # PHASE 5 — BUILD (autonomous)
 # ════════════════════════════════════════════════
 
-### 5.0 Set an autonomous goal (Stop-hook lock)
+### 5.0 Set up autonomy (Dynamic Workflow or `/goal`)
 
-Before invoking ralph, **prompt the user to set a `/goal`** that prevents Claude Code from stopping mid-build. The goal is a session-scoped Stop hook: as long as the condition holds open, Claude is required to keep working — protecting P5's autonomous loop from premature termination on minor interruptions.
+P5 must run until **every acceptance checklist item in `<slug>-e2e.md` maps to a passing assertion**. To protect that loop from premature termination (context exhaustion, accidental session ends, harness-level idle timeouts), Telos asks the user to opt into one of two autonomy mechanisms, in this order of preference:
+
+#### 5.0.A Dynamic Workflow mode — preferred
+
+[Claude Code Dynamic Workflows](https://code.claude.com/docs/en/workflows) (Claude Code v2.1.154+, all paid plans; on Pro must be enabled in `/config`) let the P5 loop run as a JavaScript script in an isolated runtime — separate from the conversation. The script holds the loop, branching, and intermediate state; Claude's context sees only the final answer. Properties matched to P5's requirements:
+
+- **True autonomy** — the runtime explicitly forbids mid-run user input. Stronger guarantee than `/goal`, which relies on Claude obeying a Stop hook.
+- **Parallel sub-agents** — up to 16 concurrent (1000 total per run). Each acceptance checklist journey can be written, fixed, and verified by independent agents.
+- **Script-encoded convergence loop** — "run ralph → run validation pipeline → if any acceptance item still fails, fix and re-run, bounded by N iterations" is **codified in the workflow script** rather than left to a vague Stop hook.
+- **Cross-checked verification** — workflows can have an adversarial-review phase that independently audits the spec-to-checklist mapping before the run terminates.
+- **Resumable** within the same session.
+
+**Activation paths (Telos surfaces; the user types — Telos never types these itself):**
+
+| Path | What the user types | Best for |
+|---|---|---|
+| Session-wide ultracode | `/effort ultracode` once at session start | Multiple tasks per session, all substantive work auto-workflowed |
+| Per-task keyword | `ultracode` included in the next message (e.g., a message containing `ultracode: continue P5 for <slug>` after GATE 4) | One-off use this session |
+| Saved `/telos-build` workflow | `/telos-build <slug>` — only after a prior P5 run was saved via `/workflows` → `s` → `.claude/workflows/telos-build` | Repeat use across tasks (recommended after first successful run) |
+
+**Suggested per-task message** (Telos prints, user sends verbatim):
+
+```
+ultracode: continue P5 for <slug>. Drive prp-core:prp-ralph against the plan at .claude/PRPs/plans/<slug>.plan.md and the E2E contract at .claude/PRPs/plans/<slug>-e2e.md. Loop until every acceptance checklist item in the E2E contract maps to a passing assertion in tests/e2e/<slug>.spec.ts. Stop only if (a) all acceptance items pass, (b) a frozen section of the E2E contract would need editing (halt and report — Telos will escalate to GATE 4), or (c) the bounded-retry cap is exceeded.
+```
+
+**Telos itself does not invoke `/effort`, the `ultracode` keyword, or `/workflows`.** These are user-level harness directives, same posture as `/goal`. Telos surfaces the suggested activation and waits for the user to either send it or decline and fall back to 5.0.B.
+
+**When workflow mode is active**, ralph's loop in 5.1 runs **inside** the workflow runtime: the script invokes ralph (or writes code + spec directly per the plan + E2E doc), executes the validation pipeline, retries on failures, and only returns to the conversation when the terminal "verify every acceptance item passes" phase succeeds — or a stop condition (5.3) fires.
+
+**Save for reuse (first successful workflow run):** after the run completes, Telos suggests `/workflows` → select the run → press `s` → save to `.claude/workflows/telos-build` (project-shared). Subsequent `/telos task` invocations can offer `/telos-build <slug>` as a one-shot activation path.
+
+**Availability check.** If Claude Code is < v2.1.154, or the user is on Pro without Dynamic Workflows enabled in `/config`, or workflows are disabled (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` / `disableWorkflows: true` in settings), this option is unavailable — fall straight to 5.0.B.
+
+#### 5.0.B `/goal` Stop-hook — fallback
+
+If the user declines workflow mode (or it's unavailable), prompt the user to set a `/goal` that prevents Claude Code from stopping mid-build. The goal is a session-scoped Stop hook: as long as the condition holds open, Claude is required to keep working — protecting P5's autonomous loop from premature termination on minor interruptions.
 
 Suggested goal text (template):
 
@@ -721,9 +757,11 @@ Show this template to the user. Two options:
 | User types it themselves | Default — keeps the user in control of session-level locks |
 | Telos asks "set this goal? (y/n)" then user types it | Same result, lighter touch |
 
-**Telos itself does not invoke `/goal`** — that command is a user-level harness directive. The user must opt in (a typed `/goal …`) before Telos proceeds to 5.1. If the user declines, P5 still runs but **without** the stop-lock — accept the lower autonomy guarantee and continue.
+**Telos itself does not invoke `/goal`** — that command is a user-level harness directive. The user must opt in (a typed `/goal …`) before Telos proceeds to 5.1. If the user declines both 5.0.A and 5.0.B, P5 still runs but **without** an autonomy lock — accept the lower autonomy guarantee and continue.
 
-Why this matters: ralph's bounded retries + Telos's wrapper-level stops cover *internal* failure modes. The `/goal` lock covers *external* premature-stop modes (context exhaustion, accidental session ends, harness-level idle timeouts). Together they make P5 autonomy real.
+#### Why this matters
+
+Ralph's bounded retries + Telos's wrapper-level stops cover *internal* failure modes. The autonomy mechanism — workflow or `/goal` — covers *external* premature-stop modes. **Workflow mode is preferred** because the runtime's no-mid-run-input invariant is *enforced* by the runtime; `/goal` relies on Claude obeying a Stop hook. Together with ralph, either makes P5 autonomy real.
 
 ### 5.1 Delegate to `prp-core:prp-ralph` (autonomous loop)
 
@@ -758,6 +796,8 @@ While `prp-ralph` runs, Telos enforces the contract written at P4:
 
 If the ralph loop produces a change that requires modifying any **frozen** section of a P4 artifact, **STOP and surface to user** with the proposed change. Do not silently approve.
 
+Under Dynamic Workflow mode (5.0.A), a frozen-section conflict halts the workflow run — the script exits and reports the conflict. Because the workflow runtime forbids mid-run user input, resolution always happens in the parent conversation: the user bounces the task back through GATE 4, edits the E2E doc, and a new workflow run is started on re-approval.
+
 ### 5.3 Monitor & Stop Conditions
 
 `prp-ralph` pauses on its own stop conditions (max iterations, repeated failures). Telos surfaces additional stops if:
@@ -769,6 +809,8 @@ If the ralph loop produces a change that requires modifying any **frozen** secti
 When ralph finishes successfully (`.claude/PRPs/reports/<slug>-report.md` written, plan archived to `plans/completed/`, every acceptance item in `<slug>-e2e.md` mapped to a passing assertion), update state → `P6`.
 
 If ralph stops mid-loop, persist state with `current_phase: P5` + the blocker, and ask user.
+
+Under Dynamic Workflow mode (5.0.A), monitor the run via `/workflows` (selectable progress view with per-phase agent counts, token totals, and elapsed time). The script's terminal phase is **"verify every acceptance checklist item maps to a passing assertion"** — the run only reports success if that phase passes. Failed or halted runs surface the same blockers above; Telos handles them in the parent conversation after the workflow exits, then asks the user whether to relaunch the workflow or fall back to a classic ralph invocation.
 
 ---
 
@@ -884,7 +926,11 @@ NEXT — your call:
 
 End turn. Do not auto-commit, push, or PR.
 
-**Goal hook (if the user accepted `/goal` at P5.0):** the condition auto-clears once the E2E suite passes — Claude Code may now stop normally. Do not instruct the user to `/goal clear` (the harness handles it automatically). If the user declined the goal at P5.0, nothing to clear.
+**Autonomy mechanism teardown** (depends on what the user opted into at 5.0):
+
+- **Dynamic Workflow mode (5.0.A)**: the workflow run terminates naturally on E2E pass — nothing to clear. If the orchestration hasn't been saved yet, Telos suggests `/workflows` → select this run → press `s` → save to `.claude/workflows/telos-build` (project-shared) so future `/telos task` runs can offer `/telos-build <slug>` as the activation path.
+- **`/goal` mode (5.0.B)**: the condition auto-clears once the E2E suite passes — Claude Code may now stop normally. Do not instruct the user to `/goal clear` (the harness handles it automatically).
+- **No autonomy lock**: nothing to clear.
 
 ---
 
@@ -991,7 +1037,7 @@ Telos is a wrapper. Two distinct relationships exist between Telos and external 
 | P2 PLAN | `prp-core:prp-plan` | `.claude/PRPs/plans/<slug>.plan.md` (decisions inlined; no separate ADR files) | pass-through + identify ADR candidates + verify + GATE 2 |
 | P3 GRILL | `grill-with-docs` | refines plan in-place; may update `CONTEXT.md`; may write `docs/adr/*.md` | trigger with plan + `flagged_terms` + ADR candidates + diff report + GATE 3 |
 | P4 E2E | Telos (no delegate; markdown design doc only) | `.claude/PRPs/plans/<slug>-e2e.md` | **Telos-owned** (no prp equivalent); design + acceptance contract; GATE 4 |
-| P5 BUILD | `prp-core:prp-ralph` *(fallback: `prp-core:prp-implement`)*; ralph **may use** `everything-claude-code:e2e` as a sub-tool when available | code, `tests/e2e/<slug>.spec.ts`, `.claude/PRPs/reports/<slug>-report.md`, plan archived to `plans/completed/` | enforce frozen P4 artifacts + monitor stops |
+| P5 BUILD | `prp-core:prp-ralph` *(fallback: `prp-core:prp-implement`)*; ralph **may use** `everything-claude-code:e2e` as a sub-tool when available. **Runtime mode** is chosen at 5.0: under **Dynamic Workflow** (5.0.A, preferred) the ralph loop executes inside Claude Code's workflow runtime (true autonomy + parallel sub-agents + script-encoded retry-until-E2E-pass); otherwise under a **`/goal` Stop-hook** (5.0.B, fallback). | code, `tests/e2e/<slug>.spec.ts`, `.claude/PRPs/reports/<slug>-report.md`, plan archived to `plans/completed/` | set up autonomy (5.0) + enforce frozen P4 artifacts + monitor stops |
 | P6 DELIVER | Telos (no delegate) | `.claude/PRPs/reports/<slug>-final.md` | aggregate validation + write hand-off summary |
 
 ### Handed-off (user runs after Telos stops at P6)
@@ -1002,6 +1048,10 @@ Telos is a wrapper. Two distinct relationships exist between Telos and external 
 | `/prp-pr` | After commit, when user is ready to PR | Opens the GitHub PR with description |
 
 **Telos never invokes `prp-commit` or `prp-pr` itself.** It only mentions them as suggested next actions in the P6 hand-off block. The user is the actor.
+
+### Runtime modes (not skills)
+
+[**Claude Code Dynamic Workflows**](https://code.claude.com/docs/en/workflows) are a *runtime mode*, not a skill — they wrap *how* P5's ralph invocation runs (script-encoded loop, parallel sub-agents, no mid-run user input). Activation happens at the user level via `/effort ultracode`, the `ultracode` keyword in a prompt, or a saved `/<name>` workflow command. Telos surfaces these options at 5.0.A and waits for the user to type one; Telos itself never invokes `/effort`, `/workflows`, or inserts `ultracode` in its own outputs.
 
 ### Skill-tool discipline
 
@@ -1022,7 +1072,7 @@ Telos is a wrapper. Two distinct relationships exist between Telos and external 
 - **HOW-CLEAR**: plan cites real files; architectural decisions are inlined in the plan and ADR-worthy ones surfaced as candidates for grill
 - **GRILLED**: domain language, edge cases, and ADR candidates were evaluated by `grill-with-docs`; any that met its three-criteria gate became `docs/adr/*.md` files
 - **WHAT-CONTRACTED**: E2E design doc (`<slug>-e2e.md`) approved before build; acceptance checklist inside it maps 1:1 to assertions written in P5
-- **BUILT-AUTONOMOUSLY**: test pyramid green without further user input
+- **BUILT-AUTONOMOUSLY**: test pyramid green without further user input — under Dynamic Workflow mode (5.0.A) the runtime's no-mid-run-input invariant enforces this; under `/goal` mode (5.0.B) the Stop hook protects it
 - **HANDED-OFF**: final report written, branch ready for commit / PR
 
 ---
@@ -1052,3 +1102,7 @@ Telos is a wrapper. Two distinct relationships exist between Telos and external 
 - ❌ Gating on a "produced" file without first verifying the upstream skill actually wrote it — a missing or empty file means the skill aborted, not that the gate passes
 - ❌ Telos itself invoking `/goal` in P5.0 — `/goal` is a user-level harness directive. Telos surfaces the suggested goal text and asks the user to type it; never silently sets it.
 - ❌ Telling the user to `/goal clear` after P6 — the goal auto-clears when the E2E condition holds. Mentioning manual clear is misleading.
+- ❌ Telos itself typing `/effort ultracode`, the `ultracode` keyword, or `/workflows` in P5.0.A — Dynamic Workflow activation is a user-level harness directive, same posture as `/goal`. Telos surfaces the suggested message and waits.
+- ❌ Running a saved `/telos-build` workflow on a task that hasn't passed GATE 4 — the workflow assumes the E2E design doc is the frozen contract. Invoking it without an approved `<slug>-e2e.md` bypasses the contract that makes P5 autonomous and lets the script "satisfy" an unspecified target.
+- ❌ Allowing the workflow script to edit `<slug>-e2e.md` (other than the Flake Quarantine append-with-approval rule) — frozen sections stay frozen even inside the runtime. A required edit means the script halts and the user bounces back through GATE 4.
+- ❌ Skipping the autonomy setup (5.0) on the assumption ralph + Telos's stops are enough — they cover internal failures, not external premature-stop modes. Run without 5.0.A or 5.0.B only when the user explicitly opts out.
